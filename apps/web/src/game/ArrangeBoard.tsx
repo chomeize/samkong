@@ -3,9 +3,8 @@ import { AnimatePresence, motion } from "motion/react";
 import {
   DndContext,
   DragOverlay,
-  MouseSensor,
-  TouchSensor,
   KeyboardSensor,
+  PointerSensor,
   pointerWithin,
   rectIntersection,
   useDraggable,
@@ -29,15 +28,19 @@ import { t } from "../i18n";
 import { TableShell } from "./table/TableShell";
 import { OpponentChips } from "./table/OpponentChips";
 
-/**
- * Landscape sizing: the three piles get most of the table; a slim panel on the right
- * holds the status and Confirm. Card width follows the height first (3 rows), then
- * the width left beside the panel. Fits a 667×375 phone (even with Safari's bars) up to desktop.
- */
+/** Sizing for the waiting screen: piles on the left, a status panel on the right. */
 export const LAYOUT_VARS = {
   "--panel-w": "clamp(170px, 26vw, 240px)",
-  // 182px = table padding 32 + inset 16 + gap 12 + row padding 20 + label 92 + label gap 10 … minus nothing; card gaps 24 added below
   "--row-w": "max(32px, min(88px, calc((100dvh - 108px) / 4.6), calc((100vw - var(--panel-w) - 206px) / 5)))",
+} as CSSProperties;
+
+/**
+ * Arrange screen sizing: the piles sit centred on the table. Card width follows the
+ * visible height first (3 rows + status line), then the width, keeping ~140px clear on
+ * each side so the corner buttons never cover a card.
+ */
+const ARRANGE_VARS = {
+  "--row-w": "max(34px, min(92px, calc((100dvh - 118px) / 4.25), calc((100vw - 280px - 146px) / 5)))",
 } as CSSProperties;
 
 /** Deal order split 3/5/5: where the cards start, and what Reset goes back to. */
@@ -54,42 +57,31 @@ const collision: CollisionDetection = (args) => {
   return rectIntersection(args).filter((h) => h.id !== args.active.id).slice(0, 1);
 };
 
-function SwapCard({
-  id,
-  selected,
-  onTap,
-  dealIndex,
-}: {
-  id: CardId;
-  selected: boolean;
-  onTap: (id: CardId) => void;
-  /** Set right after the deal: the card flies in, staggered by its position. */
-  dealIndex: number | null;
-}) {
+/** A card you can pick up and drop onto any other card to swap the two. */
+function SwapCard({ id, dealIndex }: { id: CardId; dealIndex: number | null }) {
   const drag = useDraggable({ id, data: { cardId: id } });
   const drop = useDroppable({ id, data: { cardId: id } });
+  const target = drop.isOver && !drag.isDragging;
   return (
     <motion.div
       initial={dealIndex !== null ? { y: -260, opacity: 0, rotate: -14 } : false}
       animate={{ y: 0, opacity: 1, rotate: 0 }}
       transition={{ delay: (dealIndex ?? 0) * 0.05, type: "spring", stiffness: 260, damping: 22 }}
     >
-      <button
-        type="button"
+      <div
         ref={(el) => {
           drag.setNodeRef(el);
           drop.setNodeRef(el);
         }}
         {...drag.listeners}
         {...drag.attributes}
-        aria-pressed={selected}
-        onClick={() => onTap(id)}
-        // Cards own the gesture: no page scroll or zoom while a finger is on a card.
-        style={{ touchAction: "none" }}
-        className={`rounded-card ${drop.isOver && !drag.isDragging ? "ring-2 ring-gold ring-offset-2 ring-offset-felt" : ""}`}
+        aria-roledescription="ไพ่ที่ลากได้"
+        // The card owns the gesture: no page scroll, zoom, text selection or iOS long-press menu.
+        style={{ touchAction: "none", WebkitUserSelect: "none", WebkitTouchCallout: "none", cursor: "grab" } as CSSProperties}
+        className={`rounded-card transition-transform duration-150 ${target ? "scale-105 ring-[3px] ring-gold ring-offset-2 ring-offset-felt" : ""}`}
       >
-        <PlayingCard id={id} width="var(--row-w)" selected={selected} ghost={drag.isDragging} />
-      </button>
+        <PlayingCard id={id} width="var(--row-w)" ghost={drag.isDragging} />
+      </div>
     </motion.div>
   );
 }
@@ -120,7 +112,6 @@ export default function ArrangeBoard() {
   const hand = useGame((s) => s.hand)!;
   const draft = useGame((s) => s.draft);
   const { setDraft, confirm } = useGame.getState();
-  const [selected, setSelected] = useState<CardId | null>(null);
   const [intro, setIntro] = useState(() => introPlayedFor !== hand.roundNumber);
   const [dealing, setDealing] = useState(false);
   const endIntro = useCallback(() => {
@@ -133,10 +124,9 @@ export default function ArrangeBoard() {
   const [foulOpen, setFoulOpen] = useState(false);
   const [busy, setBusy] = useState(false);
 
+  // A drag starts as soon as a finger or mouse moves 4px — no long press needed on phones.
   const sensors = useSensors(
-    useSensor(MouseSensor, { activationConstraint: { distance: 6 } }),
-    // Short press-and-hold starts a drag on touch, so quick taps stay taps.
-    useSensor(TouchSensor, { activationConstraint: { delay: 120, tolerance: 8 } }),
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
     useSensor(KeyboardSensor),
   );
 
@@ -160,34 +150,18 @@ export default function ArrangeBoard() {
     return { text: describeHand(v), tone: bad ? "bad" : "ok" };
   };
 
-  const swap = (a: CardId, b: CardId) => {
-    if (a === b) return;
-    setDraft(swapCards(draft, a, b));
-    tap(12);
-    sound.play("place");
-  };
-
-  /** Tap one card, then another, to swap them. Tap the same card again to cancel. */
-  const onTapCard = (id: CardId) => {
-    tap();
-    if (selected === null) setSelected(id);
-    else if (selected === id) setSelected(null);
-    else {
-      swap(selected, id);
-      setSelected(null);
-    }
-  };
-
   const onDragStart = (e: DragStartEvent) => {
     setDragging((e.active.data.current as { cardId: CardId }).cardId);
-    setSelected(null);
     tap();
   };
   const onDragEnd = (e: DragEndEvent) => {
     setDragging(null);
     const a = (e.active.data.current as { cardId: CardId }).cardId;
     const b = (e.over?.data.current as { cardId: CardId } | undefined)?.cardId;
-    if (b) swap(a, b);
+    if (!b || a === b) return;
+    setDraft(swapCards(draft, a, b));
+    tap(12);
+    sound.play("place");
   };
 
   const run = async (fn: () => Promise<unknown>) => {
@@ -212,72 +186,58 @@ export default function ArrangeBoard() {
   return (
     <DndContext sensors={sensors} collisionDetection={collision} onDragStart={onDragStart} onDragEnd={onDragEnd} onDragCancel={() => setDragging(null)}>
       <TableShell center={<OpponentChips />}>
-        <div className="absolute inset-x-2 bottom-2 top-12 flex gap-3" style={LAYOUT_VARS}>
-          {/* The three piles: every card is draggable and is also a drop target for swapping. */}
-          <section className="flex min-w-0 flex-1 flex-col justify-center gap-1.5">
-            {ROWS.map((row) => {
-              const status = rowStatus(row);
-              return (
-                <div
-                  key={row}
-                  className={`flex items-center gap-2.5 rounded-2xl px-2.5 py-1.5 ${status.tone === "bad" ? "bg-bad/10 ring-1 ring-bad/40" : "bg-black/20"}`}
-                >
-                  <RowLabel row={row} status={status} />
-                  <div className="flex gap-1.5">
-                    {intro
-                      ? draft[row].map((id) => <div key={id} style={{ width: "var(--row-w)", height: "calc(var(--row-w) * 1.4)" }} />)
-                      : draft[row].map((id) => (
-                          <SwapCard key={id} id={id} selected={selected === id} onTap={onTapCard} dealIndex={dealing ? dealIndex++ : null} />
-                        ))}
-                  </div>
-                </div>
-              );
-            })}
-          </section>
-
-          {/* Right: what the player needs to know, and Confirm. */}
-          <section className="flex shrink-0 flex-col gap-2" style={{ width: "var(--panel-w)" }}>
-            <div className="flex flex-1 flex-col justify-center gap-2 rounded-2xl bg-black/25 p-3 text-center">
-              <p
-                role="status"
-                className={`font-display text-sm font-semibold ${isFoul ? "text-bad" : "text-good"}`}
+        <div className="absolute inset-x-2 bottom-2 top-11 flex flex-col items-center justify-center gap-1.5" style={ARRANGE_VARS}>
+          {/* The three piles, centred on the table. */}
+          {ROWS.map((row) => {
+            const status = rowStatus(row);
+            return (
+              <div
+                key={row}
+                className={`flex items-center gap-2.5 rounded-2xl px-2.5 py-1 ${status.tone === "bad" ? "bg-bad/10 ring-1 ring-bad/40" : "bg-black/20"}`}
               >
-                {isFoul ? `✕ ${t.game.foul}` : `✓ ${t.game.valid}`}
-              </p>
-              {isFoul && (
-                <p className="text-xs text-bad">{foulReasons.map((r) => t.game.foulReasons[r]).join(" · ")}</p>
-              )}
-              <p className="text-[11px] leading-snug text-ink-dim">
-                {selected ? t.game.swapPick : t.game.swapHint}
-              </p>
-            </div>
-            <button
-              type="button"
-              className="chip min-h-[36px] justify-center text-xs"
-              disabled={!changed}
-              onClick={() => {
-                setDraft(initial);
-                setSelected(null);
-              }}
-            >
-              ↺ {t.game.reset}
-            </button>
-            <button
-              type="button"
-              className={`${isFoul ? "btn-danger" : "btn-primary"} min-h-[44px] w-full`}
-              disabled={busy}
-              onClick={onConfirm}
-            >
-              {t.game.confirm}
-            </button>
-          </section>
+                <RowLabel row={row} status={status} />
+                {/* Fixed width for 5 cards so all three rows line up, including the 3-card front row. */}
+                <div className="flex gap-1.5" style={{ width: "calc(5 * var(--row-w) + 24px)" }}>
+                  {intro
+                    ? draft[row].map((id) => <div key={id} style={{ width: "var(--row-w)", height: "calc(var(--row-w) * 1.4)" }} />)
+                    : draft[row].map((id) => <SwapCard key={id} id={id} dealIndex={dealing ? dealIndex++ : null} />)}
+                </div>
+              </div>
+            );
+          })}
+          <p role="status" className={`text-center text-xs font-semibold ${isFoul ? "text-bad" : "text-good"}`}>
+            {isFoul ? `✕ ${t.game.foul}: ${foulReasons.map((r) => t.game.foulReasons[r]).join(" · ")}` : `✓ ${t.game.valid}`}
+            <span className="ml-2 font-normal text-ink-dim">· {t.game.swapHint}</span>
+          </p>
+        </div>
+
+        {/* Bottom-right corner: Reset and Confirm, clear of the centred piles. */}
+        <div className="absolute bottom-2 right-2 flex w-[128px] flex-col gap-1.5">
+          <button
+            type="button"
+            className="chip min-h-[34px] justify-center text-xs"
+            disabled={!changed}
+            onClick={() => setDraft(initial)}
+          >
+            ↺ {t.game.reset}
+          </button>
+          <button
+            type="button"
+            className={`${isFoul ? "btn-danger" : "btn-primary"} min-h-[46px] w-full px-3 text-base`}
+            disabled={busy}
+            onClick={onConfirm}
+          >
+            {t.game.confirm}
+          </button>
         </div>
       </TableShell>
 
       <AnimatePresence>{intro && <ShuffleIntro onDone={endIntro} />}</AnimatePresence>
 
       <DragOverlay dropAnimation={{ duration: 160, easing: "ease-out" }}>
-        {dragging ? <PlayingCard id={dragging} width="calc(var(--row-w, 60px) * 1.1)" className="rotate-3 shadow-lift" style={{ cursor: "grabbing" } as CSSProperties} /> : null}
+        {dragging ? (
+          <PlayingCard id={dragging} width="calc(var(--row-w, 60px) * 1.12)" className="rotate-3 shadow-lift" style={{ cursor: "grabbing" } as CSSProperties} />
+        ) : null}
       </DragOverlay>
 
       <Sheet open={foulOpen} onClose={() => setFoulOpen(false)} title={t.game.foulTitle}>
