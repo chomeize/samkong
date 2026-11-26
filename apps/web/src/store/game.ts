@@ -77,6 +77,8 @@ interface GameState {
   start(): Promise<void>;
   setDraft(d: ArrangementDTO): void;
   confirm(acceptFoul: boolean): Promise<void>;
+  /** Take back a confirmation to keep swapping (only while the round is still open). */
+  unconfirm(): Promise<void>;
   nextRound(): Promise<void>;
   endGame(): Promise<void>;
   playAgain(): Promise<void>;
@@ -232,6 +234,11 @@ export const useGame = create<GameState>((set, get) => {
         sound.play("confirm");
         const { hand } = get();
         if (hand) set({ hand: { ...hand, isConfirmed: true, arrangement: get().draft } });
+      }),
+    unconfirm: () =>
+      act(async () => {
+        const hand = await call("unconfirm_hand", {});
+        set({ hand, draft: sanitizeDraft(hand.arrangement, hand.dealtCards) });
       }),
     nextRound: () => act(async () => void (await call("next_round", {}))),
     endGame: () => act(async () => void (await call("end_game", {}))),

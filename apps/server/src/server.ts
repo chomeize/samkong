@@ -559,6 +559,14 @@ export function createGameServer(config: ServerConfig, options: GameServerOption
       return null;
     });
 
+    register("unconfirm_hand", () => {
+      const { room, player } = requireSession(socket);
+      const hand = room.unconfirmHand(player.playerId, now());
+      broadcastStatus(room, player);
+      broadcastRoom(room);
+      return hand;
+    });
+
     register("next_round", () => {
       const { room, player } = requireSession(socket);
       emitDeal(room, room.nextRound(player.playerId, now()));

@@ -98,6 +98,8 @@ export interface ClientToServerEvents {
   update_arrangement: (p: ArrangementDTO, ack: AckFn) => void;
   request_auto_arrange: (p: EmptyPayload, ack: AckFn<ArrangementDTO>) => void;
   confirm_hand: (p: ConfirmHandPayload, ack: AckFn) => void;
+  /** Take a confirmation back to keep arranging, while the round is still open. */
+  unconfirm_hand: (p: EmptyPayload, ack: AckFn<PrivateHand>) => void;
   next_round: (p: EmptyPayload, ack: AckFn) => void;
   end_game: (p: EmptyPayload, ack: AckFn) => void;
   play_again: (p: EmptyPayload, ack: AckFn) => void;

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { motion } from "motion/react";
 import { CATEGORY_NAMES, ROWS, type Row } from "@sam-kong/engine";
 import type { PublicPlayer, RevealedHand, RoundResult } from "@sam-kong/protocol";
@@ -11,6 +11,7 @@ import { useGame } from "../store/game";
 import { t } from "../i18n";
 import { TableShell } from "./table/TableShell";
 import { PlayerResult, fromSide } from "./ResultDetails";
+import { useIsPortrait } from "./table/useOrientation";
 
 type SeatPos = "me" | "left" | "top" | "right";
 /** Stage 0–2 reveals front, middle, back in turn; 3 is the summary with everything face up. */
@@ -119,6 +120,7 @@ function Seat({
   result,
   stage,
   onOpen,
+  portrait,
 }: {
   pos: SeatPos;
   player: PublicPlayer | undefined;
@@ -126,6 +128,7 @@ function Seat({
   result: RoundResult;
   stage: Stage;
   onOpen: () => void;
+  portrait?: boolean;
 }) {
   const score = result.scores[hand.playerId]!;
   const isMe = pos === "me";
@@ -168,8 +171,27 @@ function Seat({
   );
 
   const piles = (
-    <Piles hand={hand} width={isMe ? "var(--me-w)" : "var(--opp-w)"} stage={stage} label={label} bannerBelow={pos === "top"} />
+    <Piles
+      hand={hand}
+      width={isMe ? "var(--me-w)" : "var(--opp-w)"}
+      stage={stage}
+      label={label}
+      bannerBelow={pos === "top" || (portrait && !isMe)}
+    />
   );
+
+  // Portrait: seats flow in rows (opponents across the top, you at the bottom), name above piles.
+  if (portrait) {
+    return (
+      <div className={`flex min-w-0 flex-col items-center ${isMe ? "gap-2.5" : "gap-1.5"}`}>
+        <div className="flex items-center gap-1.5">
+          {identity}
+          {totalChip}
+        </div>
+        {piles}
+      </div>
+    );
+  }
 
   // Name and total sit beside the piles (toward the middle of the table), so every seat
   // is only as tall as its piles and nothing overlaps on a short landscape screen.
@@ -193,7 +215,17 @@ function Seat({
 }
 
 /** Your running score card, filled in pile by pile as the reveal plays. */
-function ScorePanel({ result, meId, stage }: { result: RoundResult; meId: string; stage: Stage }) {
+function ScorePanel({
+  result,
+  meId,
+  stage,
+  className = "absolute bottom-1 right-1 w-[min(132px,20vw)]",
+}: {
+  result: RoundResult;
+  meId: string;
+  stage: Stage;
+  className?: string;
+}) {
   const score = result.scores[meId];
   if (!score) return null;
   const lines: Array<{ label: string; value: number; show: boolean; tone?: string }> = [
@@ -203,7 +235,7 @@ function ScorePanel({ result, meId, stage }: { result: RoundResult; meId: string
     { label: t.result.foulPenalty, value: score.foul, show: stage === SUMMARY && score.foul !== 0, tone: "text-bad" },
   ];
   return (
-    <div className="absolute bottom-1 right-1 w-[min(132px,20vw)] rounded-xl bg-night/85 px-2 py-1.5 text-[11px] shadow-lift ring-1 ring-gold/30 backdrop-blur" aria-live="polite">
+    <div className={`${className} rounded-xl bg-night/85 px-2 py-1.5 text-[11px] shadow-lift ring-1 ring-gold/30 backdrop-blur`} aria-live="polite">
       {lines.filter((l, i) => i < ROWS.length || l.show).map((l) => (
         <div key={l.label} className="flex justify-between leading-[1.45]">
           <span className={l.tone ?? "text-ink-dim"}>{l.label}:</span>
@@ -228,6 +260,7 @@ export default function RoundResultView() {
   const [busy, setBusy] = useState(false);
   const [detail, setDetail] = useState<string | null>(null);
   const isHost = room.hostPlayerId === session.playerId;
+  const portrait = useIsPortrait();
   const round = result?.roundNumber ?? -1;
   const [stage, setStage] = useState<Stage>(() => (revealPlayedFor === round ? SUMMARY : -1));
 
@@ -281,27 +314,25 @@ export default function RoundResultView() {
 
   const detailHand = detail ? result.hands.find((h) => h.playerId === detail) : undefined;
 
-  return (
-    <TableShell>
-      {stage === SUMMARY && (me?.scoops ?? 0) > 0 && revealPlayedFor === round && <ScoopOnce round={round} count={me!.scoops} />}
+  const seatFor = ({ id, pos }: { id: string; pos: SeatPos }) => (
+    <Seat
+      key={id}
+      pos={pos}
+      player={room.players.find((p) => p.playerId === id)}
+      hand={result.hands.find((h) => h.playerId === id)!}
+      result={result}
+      stage={stage}
+      onOpen={() => setDetail(id)}
+      portrait={portrait}
+    />
+  );
+  const mySeat = seats.find((s) => s.pos === "me");
+  const opponents = seats.filter((s) => s.pos !== "me");
 
-      {seats.map(({ id, pos }) => (
-        <Seat
-          key={id}
-          pos={pos}
-          player={room.players.find((p) => p.playerId === id)}
-          hand={result.hands.find((h) => h.playerId === id)!}
-          result={result}
-          stage={stage}
-          onOpen={() => setDetail(id)}
-        />
-      ))}
-
-      <ScorePanel result={result} meId={session.playerId} stage={stage} />
-
-      {/* Bottom-left: skip during the reveal; host controls afterwards. */}
-      <div className="absolute bottom-1 left-1 flex w-[min(170px,24vw)] flex-col gap-1.5">
-        {stage < SUMMARY ? (
+  // Skip during the reveal; host controls afterwards.
+  const actions = (className: string) => (
+    <div className={`flex flex-col gap-1.5 ${className}`}>
+      {stage < SUMMARY ? (
           <button type="button" className="chip min-h-[38px] justify-center" onClick={() => setStage(SUMMARY)}>
             ⏭ {t.result.skip}
           </button>
@@ -317,7 +348,37 @@ export default function RoundResultView() {
         ) : (
           <p className="rounded-xl bg-black/40 px-2 py-1.5 text-center text-xs text-ink-dim">{t.result.waitHost}</p>
         )}
-      </div>
+    </div>
+  );
+
+  // Portrait sizes: opponents share the width (each fan of 5 is ≈2.95 card widths wide),
+  // and everything is capped by the visible height so 4 players fit without overlapping.
+  const n = Math.max(1, opponents.length);
+  const portraitVars = {
+    "--opp-w": `max(22px, min(46px, calc((100vw - 24px - ${(n - 1) * 8}px) / ${(n * 2.95).toFixed(2)}), 6.6dvh))`,
+    "--me-w": "max(28px, min(70px, calc((100vw - 40px) / 2.95), 10dvh))",
+  } as CSSProperties;
+
+  return (
+    <TableShell>
+      {stage === SUMMARY && (me?.scoops ?? 0) > 0 && revealPlayedFor === round && <ScoopOnce round={round} count={me!.scoops} />}
+
+      {portrait ? (
+        <div className="absolute inset-x-2 bottom-1 top-2 flex flex-col justify-between gap-2" style={portraitVars}>
+          <div className="flex items-start justify-around gap-2">{opponents.map(seatFor)}</div>
+          <div className="flex items-stretch justify-center gap-2">
+            <ScorePanel result={result} meId={session.playerId} stage={stage} className="w-[136px]" />
+            {actions("w-[150px] justify-center")}
+          </div>
+          <div className="flex justify-center">{mySeat && seatFor(mySeat)}</div>
+        </div>
+      ) : (
+        <>
+          {seats.map(seatFor)}
+          <ScorePanel result={result} meId={session.playerId} stage={stage} />
+          {actions("absolute bottom-1 left-1 w-[min(170px,24vw)]")}
+        </>
+      )}
 
       <Sheet open={!!detailHand} onClose={() => setDetail(null)} title={t.result.breakdown}>
         {detailHand && (

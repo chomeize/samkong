@@ -5,7 +5,6 @@ import { Leaderboard, leaderboardFromRoom } from "../components/Leaderboard";
 import { Countdown } from "../components/Countdown";
 import { ReactionFeed, ReactionPicker } from "../components/Reactions";
 import { RoomUIContext } from "../game/table/RoomUI";
-import { RotateOverlay } from "../game/table/RotateOverlay";
 import { sessionStore } from "../lib/session";
 import { useGame } from "../store/game";
 import { t } from "../i18n";
@@ -124,10 +123,7 @@ export default function RoomPage() {
   return (
     <RoomUIContext.Provider value={ui}>
       {tableView ? (
-        <>
-          {view}
-          <RotateOverlay />
-        </>
+view
       ) : (
         <div className="mx-auto flex min-h-dvh w-full max-w-lg flex-col">
           <ConnectionBanner />

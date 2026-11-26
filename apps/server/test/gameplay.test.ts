@@ -169,6 +169,37 @@ describe("arrange and confirm (FR-06, FR-09, AC-03)", () => {
   });
 });
 
+describe("edit after confirming", () => {
+  it("lets a player take back a confirmation while the round is open", async () => {
+    const [a, b] = await startGame(2);
+    ok(await a!.c.emitWithAck("confirm_hand", { arrangement: validFor(a!.hand!), acceptFoul: false }));
+    const reopened = ok(await a!.c.emitWithAck("unconfirm_hand", {}));
+    expect(reopened.isConfirmed).toBe(false);
+    expect(reopened.arrangement).toEqual(validFor(a!.hand!)); // keeps what they had
+    const room = t.server.store.getRoom(a!.roomCode)!;
+    expect(room.players.get(a!.playerId)!.playerState).toBe("ARRANGING");
+    expect(room.gameState).toBe("ARRANGING");
+
+    // B confirming alone must not reveal: A is arranging again.
+    ok(await b!.c.emitWithAck("confirm_hand", { arrangement: validFor(b!.hand!), acceptFoul: false }));
+    await sleep(50);
+    expect(room.gameState).toBe("WAITING_FOR_CONFIRMATION");
+    const result = next(b!.c, "round_result");
+    ok(await a!.c.emitWithAck("confirm_hand", { arrangement: validFor(a!.hand!), acceptFoul: false }));
+    expect((await result).roundNumber).toBe(1);
+  });
+
+  it("can't take back a confirmation that wasn't made, or after the reveal", async () => {
+    const [a, b] = await startGame(2);
+    expect(errCode(await a!.c.emitWithAck("unconfirm_hand", {}))).toBe("INVALID_STATE");
+    ok(await a!.c.emitWithAck("confirm_hand", { arrangement: validFor(a!.hand!), acceptFoul: false }));
+    const result = next(a!.c, "round_result");
+    ok(await b!.c.emitWithAck("confirm_hand", { arrangement: validFor(b!.hand!), acceptFoul: false }));
+    await result;
+    expect(errCode(await a!.c.emitWithAck("unconfirm_hand", {}))).toBe("INVALID_STATE");
+  });
+});
+
 describe("reveal and scoring (FR-11, FR-12, AC-05, AC-06)", () => {
   it("reveals only after everyone confirms, then scores once with a zero sum", async () => {
     const seats = await startGame(4);

@@ -379,6 +379,22 @@ export class Room {
   }
 
   /**
+   * Take back a confirmation to keep arranging. Allowed while the round is still open
+   * (someone hasn't confirmed and time hasn't run out); not for auto-submitted hands.
+   */
+  unconfirmHand(playerId: string, now: number): PrivateHand {
+    this.getPlayer(playerId);
+    if (!ARRANGING_STATES.includes(this.gameState)) throw new GameError("INVALID_STATE");
+    const hand = this.round?.hands.get(playerId);
+    if (!hand || !hand.confirmed || hand.auto) throw new GameError("INVALID_STATE");
+    hand.confirmed = false;
+    this.getPlayer(playerId).playerState = "ARRANGING";
+    if (this.confirmedCount() === 0) this.gameState = "ARRANGING";
+    this.touch(now);
+    return this.privateHandFor(playerId)!;
+  }
+
+  /**
    * Confirm for a player who can't (timeout, left the game). Keeps their draft if it is
    * complete and not fouled, otherwise auto-arranges from their own 13 cards.
    */

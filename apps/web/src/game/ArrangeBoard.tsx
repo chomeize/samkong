@@ -27,6 +27,7 @@ import { useGame } from "../store/game";
 import { t } from "../i18n";
 import { TableShell } from "./table/TableShell";
 import { OpponentChips } from "./table/OpponentChips";
+import { useIsPortrait } from "./table/useOrientation";
 
 /** Sizing for the waiting screen: piles on the left, a status panel on the right. */
 export const LAYOUT_VARS = {
@@ -41,6 +42,14 @@ export const LAYOUT_VARS = {
  */
 const ARRANGE_VARS = {
   "--row-w": "max(34px, min(92px, calc((100dvh - 118px) / 4.25), calc((100vw - 280px - 146px) / 5)))",
+} as CSSProperties;
+
+/**
+ * Portrait: each pile's label sits above its cards, so cards use the full width;
+ * ~300px of the height goes to the bar, opponents, labels and the bottom buttons.
+ */
+export const ARRANGE_VARS_PORTRAIT = {
+  "--row-w": "max(34px, min(76px, calc((100vw - 2rem - 20px - 24px) / 5), calc((100dvh - 300px) / 4.2)))",
 } as CSSProperties;
 
 /** Deal order split 3/5/5: where the cards start, and what Reset goes back to. */
@@ -88,8 +97,23 @@ function SwapCard({ id, dealIndex }: { id: CardId; dealIndex: number | null }) {
 
 export type RowStatus = { text: string; tone: "dim" | "ok" | "bad" };
 
-/** Row name and live hand name, shown to the left of each pile. */
-export function RowLabel({ row, status }: { row: Row; count?: number; status: RowStatus }) {
+/** Row name and live hand name: to the left of each pile, or one line above it in portrait. */
+export function RowLabel({ row, status, inline }: { row: Row; count?: number; status: RowStatus; inline?: boolean }) {
+  if (inline) {
+    return (
+      <div className="flex items-baseline justify-between gap-2 px-0.5 leading-tight">
+        <span className="font-display text-sm font-semibold">
+          {t.game.rows[row]} <span className="text-xs font-normal text-ink-dim">{ROW_SIZES[row]} ใบ</span>
+        </span>
+        <span
+          className={`truncate text-xs font-semibold ${status.tone === "ok" ? "text-gold-soft" : status.tone === "bad" ? "text-bad" : "text-ink-faint"}`}
+        >
+          {status.tone === "bad" ? "✕ " : status.tone === "ok" ? "✓ " : ""}
+          {status.text}
+        </span>
+      </div>
+    );
+  }
   return (
     <div className="w-[92px] shrink-0 leading-tight">
       <div className="font-display text-sm font-semibold">
@@ -112,6 +136,7 @@ export default function ArrangeBoard() {
   const hand = useGame((s) => s.hand)!;
   const draft = useGame((s) => s.draft);
   const { setDraft, confirm } = useGame.getState();
+  const portrait = useIsPortrait();
   const [intro, setIntro] = useState(() => introPlayedFor !== hand.roundNumber);
   const [dealing, setDealing] = useState(false);
   const endIntro = useCallback(() => {
@@ -186,18 +211,27 @@ export default function ArrangeBoard() {
   return (
     <DndContext sensors={sensors} collisionDetection={collision} onDragStart={onDragStart} onDragEnd={onDragEnd} onDragCancel={() => setDragging(null)}>
       <TableShell center={<OpponentChips />}>
-        <div className="absolute inset-x-2 bottom-2 top-11 flex flex-col items-center justify-center gap-1.5" style={ARRANGE_VARS}>
+        <div
+          className={
+            portrait
+              ? "absolute inset-x-3 bottom-[68px] top-1 flex flex-col items-center justify-center gap-2"
+              : "absolute inset-x-2 bottom-2 top-11 flex flex-col items-center justify-center gap-1.5"
+          }
+          style={portrait ? ARRANGE_VARS_PORTRAIT : ARRANGE_VARS}
+        >
           {/* The three piles, centred on the table. */}
           {ROWS.map((row) => {
             const status = rowStatus(row);
             return (
               <div
                 key={row}
-                className={`flex items-center gap-2.5 rounded-2xl px-2.5 py-1 ${status.tone === "bad" ? "bg-bad/10 ring-1 ring-bad/40" : "bg-black/20"}`}
+                className={`flex rounded-2xl px-2.5 py-1 ${portrait ? "flex-col gap-1 pb-1.5" : "items-center gap-2.5"} ${
+                  status.tone === "bad" ? "bg-bad/10 ring-1 ring-bad/40" : "bg-black/20"
+                }`}
               >
-                <RowLabel row={row} status={status} />
+                <RowLabel row={row} status={status} inline={portrait} />
                 {/* Fixed width for 5 cards so all three rows line up, including the 3-card front row. */}
-                <div className="flex gap-1.5" style={{ width: "calc(5 * var(--row-w) + 24px)" }}>
+                <div className={`flex gap-1.5 ${portrait ? "justify-center" : ""}`} style={{ width: "calc(5 * var(--row-w) + 24px)" }}>
                   {intro
                     ? draft[row].map((id) => <div key={id} style={{ width: "var(--row-w)", height: "calc(var(--row-w) * 1.4)" }} />)
                     : draft[row].map((id) => <SwapCard key={id} id={id} dealIndex={dealing ? dealIndex++ : null} />)}
@@ -207,15 +241,18 @@ export default function ArrangeBoard() {
           })}
           <p role="status" className={`text-center text-xs font-semibold ${isFoul ? "text-bad" : "text-good"}`}>
             {isFoul ? `✕ ${t.game.foul}: ${foulReasons.map((r) => t.game.foulReasons[r]).join(" · ")}` : `✓ ${t.game.valid}`}
-            <span className="ml-2 font-normal text-ink-dim">· {t.game.swapHint}</span>
+            <span className={`font-normal text-ink-dim ${portrait ? "block" : "ml-2"}`}>
+              {portrait ? "" : "· "}
+              {t.game.swapHint}
+            </span>
           </p>
         </div>
 
-        {/* Bottom-right corner: Reset and Confirm, clear of the centred piles. */}
-        <div className="absolute bottom-2 right-2 flex w-[128px] flex-col gap-1.5">
+        {/* Reset and Confirm: bottom-right corner in landscape, a full-width bar in portrait. */}
+        <div className={portrait ? "absolute inset-x-3 bottom-2 flex gap-2" : "absolute bottom-2 right-2 flex w-[128px] flex-col gap-1.5"}>
           <button
             type="button"
-            className="chip min-h-[34px] justify-center text-xs"
+            className={`chip justify-center ${portrait ? "min-h-[48px] flex-1 text-sm" : "min-h-[34px] text-xs"}`}
             disabled={!changed}
             onClick={() => setDraft(initial)}
           >
@@ -223,7 +260,7 @@ export default function ArrangeBoard() {
           </button>
           <button
             type="button"
-            className={`${isFoul ? "btn-danger" : "btn-primary"} min-h-[46px] w-full px-3 text-base`}
+            className={`${isFoul ? "btn-danger" : "btn-primary"} ${portrait ? "min-h-[48px] flex-[2]" : "min-h-[46px] w-full"} px-3 text-base`}
             disabled={busy}
             onClick={onConfirm}
           >
