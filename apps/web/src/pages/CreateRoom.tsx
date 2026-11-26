@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { DEFAULT_ROOM_SETTINGS, NICKNAME_MAX_LENGTH, ROOM_NAME_MAX_LENGTH, type AvatarId, type RoomSettings } from "@sam-kong/protocol";
 import { AvatarPicker, Screen } from "../components/ui";
@@ -21,6 +21,16 @@ export function PageHeader({ title, back = "/" }: { title: string; back?: string
 export default function CreateRoom() {
   const navigate = useNavigate();
   const createRoom = useGame((s) => s.createRoom);
+  const serverInfo = useGame((s) => s.serverInfo);
+  const ownerKey = useGame((s) => s.ownerKey);
+
+  // Only the site owner may create rooms: anyone else is sent back home with an explanation.
+  useEffect(() => {
+    if (serverInfo?.ownerKeyRequired && !ownerKey) {
+      useGame.getState().toast(t.access.ownerOnly, "error");
+      navigate("/", { replace: true });
+    }
+  }, [serverInfo, ownerKey, navigate]);
   const saved = profileStore.get();
   const [displayName, setName] = useState(saved?.displayName ?? "");
   const [avatar, setAvatar] = useState<AvatarId>(saved?.avatar ?? "tiger");

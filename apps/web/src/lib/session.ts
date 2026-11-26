@@ -39,6 +39,13 @@ export const sessionStore = {
   },
 };
 
+/** The site owner's key, saved only on the owner's own devices. */
+const OWNER_KEY = "samkong.ownerKey";
+export const ownerKeyStore = {
+  get: () => read<string>(localStorage, OWNER_KEY),
+  save: (key: string | null) => write(localStorage, OWNER_KEY, key),
+};
+
 export interface Profile {
   displayName: string;
   avatar: AvatarId;

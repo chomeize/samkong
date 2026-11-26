@@ -1,3 +1,4 @@
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync } from "node:fs";
 import { createServer, type Server as HttpServer } from "node:http";
 import path from "node:path";
@@ -13,6 +14,7 @@ import {
   type AckFn,
   type AvatarId,
   type ClientToServerEvents,
+  type JoinDeniedPayload,
   type JoinedPayload,
   type PlayerLeftPayload,
   type ServerToClientEvents,
@@ -38,6 +40,8 @@ interface SocketData {
   ip: string;
   roomCode?: string;
   playerId?: string;
+  /** Set while this socket is waiting for a host to allow it into a room. */
+  pendingJoin?: { roomCode: string; requestId: string };
 }
 
 type IO = Server<ClientToServerEvents, ServerToClientEvents, Record<string, never>, SocketData>;
@@ -67,8 +71,18 @@ const createRoomSchema = z.object({
   avatar: z.string(),
   roomName: z.string().optional(),
   settings: z.record(z.unknown()).optional(),
+  ownerKey: z.string().max(200).optional(),
 });
 const joinRoomSchema = z.object({ roomCode: z.string(), displayName: z.string(), avatar: z.string() });
+const ownerKeySchema = z.object({ ownerKey: z.string().max(200) });
+const respondJoinSchema = z.object({ requestId: z.string().max(64), approve: z.boolean() });
+
+/** Constant-time comparison, so response timing doesn't leak how much of the key matched. */
+function keyMatches(given: string | undefined, expected: string): boolean {
+  const a = createHash("sha256").update(given ?? "").digest();
+  const b = createHash("sha256").update(expected).digest();
+  return timingSafeEqual(a, b);
+}
 const readySchema = z.object({ ready: z.boolean() });
 const updateSettingsSchema = z.object({
   roomName: z.string().optional(),
@@ -99,6 +113,8 @@ export function createGameServer(config: ServerConfig, options: GameServerOption
   const joinLimiter = new RateLimiter(config.rateLimits.joinRoom.capacity, config.rateLimits.joinRoom.refillPerMinute, now);
   const eventLimiter = new RateLimiter(config.rateLimits.socketEvents.capacity, config.rateLimits.socketEvents.refillPerMinute, now);
   const reactionLimiter = new RateLimiter(config.rateLimits.reactions.capacity, config.rateLimits.reactions.refillPerMinute, now);
+  /** Guessing the owner key: 5 tries, then 5 more per minute, per IP. */
+  const ownerKeyLimiter = new RateLimiter(5, 5, now);
 
   const app = express();
   app.set("trust proxy", config.trustProxy);
@@ -162,9 +178,45 @@ export function createGameServer(config: ServerConfig, options: GameServerOption
     delete socket.data.playerId;
   };
 
+  /** Turn away everyone still waiting to join this room, telling each one why. */
+  const denyAllRequests = (room: Room, reason: JoinDeniedPayload["reason"]) => {
+    for (const req of room.joinRequests.values()) {
+      const s = io.sockets.sockets.get(req.socketId);
+      if (s) {
+        delete s.data.pendingJoin;
+        s.emit("join_denied", { reason });
+      }
+    }
+    room.joinRequests.clear();
+  };
+
   const deleteRoom = (code: string) => {
+    const room = store.getRoom(code);
+    if (room) denyAllRequests(room, "room_closed");
     timers.clearRoom(code);
     store.deleteRoom(code);
+  };
+
+  /** Seat a socket in a room as a new player (direct join, or once the host allows a request). */
+  const addToRoom = (sock: GameSocket, room: Room, displayName: string, avatar: AvatarId): JoinedPayload => {
+    const playerId = generatePlayerId();
+    const sessionToken = generateSessionToken();
+    const record = room.addPlayer({ playerId, displayName, avatar, sessionToken, socketId: sock.id }, now());
+    store.saveSession(sessionToken, { roomCode: room.roomCode, playerId });
+    timers.clear(room.roomCode, "idle");
+    sock.to(roomChannel(room.roomCode)).emit("player_joined", { player: room.toPublicPlayer(record) });
+    bindSocket(sock, room, playerId);
+    broadcastRoom(room);
+    return { session: { sessionToken, playerId, roomCode: room.roomCode }, room: room.toPublic(now()), inviteUrl: inviteUrl(room.roomCode) };
+  };
+
+  /** A socket stops waiting (cancelled, disconnected, or joining somewhere else). */
+  const dropPendingJoin = (sock: GameSocket) => {
+    const pending = sock.data.pendingJoin;
+    if (!pending) return;
+    delete sock.data.pendingJoin;
+    const room = store.getRoom(pending.roomCode);
+    if (room?.joinRequests.delete(pending.requestId)) broadcastRoom(room);
   };
 
   /**
@@ -340,10 +392,28 @@ export function createGameServer(config: ServerConfig, options: GameServerOption
       (socket as unknown as { on(ev: string, fn: typeof listener): void }).on(event, listener);
     };
 
+    register("server_info", () => ({
+      ownerKeyRequired: config.ownerKey !== null,
+      joinApproval: config.joinApproval,
+    }));
+
+    register("verify_owner_key", (payload) => {
+      if (!ownerKeyLimiter.take(socket.data.ip)) throw new GameError("RATE_LIMITED");
+      const { ownerKey } = parse(ownerKeySchema, payload);
+      if (config.ownerKey !== null && !keyMatches(ownerKey, config.ownerKey)) throw new GameError("OWNER_KEY_INVALID");
+      return null;
+    });
+
     register("create_room", (payload) => {
       if (!createLimiter.take(socket.data.ip)) throw new GameError("RATE_LIMITED");
       if (socket.data.roomCode) throw new GameError("ALREADY_IN_ROOM");
       const p = parse(createRoomSchema, payload);
+      // Only the site owner may open rooms when an owner key is configured.
+      if (config.ownerKey !== null) {
+        if (!p.ownerKey) throw new GameError("OWNER_KEY_REQUIRED");
+        if (!keyMatches(p.ownerKey, config.ownerKey)) throw new GameError("OWNER_KEY_INVALID");
+      }
+      dropPendingJoin(socket);
       const displayName = cleanNickname(p.displayName);
       if (!avatarSchema.safeParse(p.avatar).success) throw new GameError("INVALID_AVATAR");
       const roomName = cleanRoomName(p.roomName, `ห้องของ ${displayName}`);
@@ -373,7 +443,8 @@ export function createGameServer(config: ServerConfig, options: GameServerOption
       return joined;
     });
 
-    register("join_room", (payload) => {
+    /** Shared checks for join_room and request_join. */
+    const parseJoin = (payload: unknown) => {
       if (!joinLimiter.take(socket.data.ip)) throw new GameError("RATE_LIMITED");
       if (socket.data.roomCode) throw new GameError("ALREADY_IN_ROOM");
       const p = parse(joinRoomSchema, payload);
@@ -382,16 +453,59 @@ export function createGameServer(config: ServerConfig, options: GameServerOption
       if (!room) throw new GameError("ROOM_NOT_FOUND");
       const displayName = cleanNickname(p.displayName);
       if (!avatarSchema.safeParse(p.avatar).success) throw new GameError("INVALID_AVATAR");
+      return { room, displayName, avatar: p.avatar as AvatarId };
+    };
 
-      const playerId = generatePlayerId();
-      const sessionToken = generateSessionToken();
-      const record = room.addPlayer({ playerId, displayName, avatar: p.avatar as AvatarId, sessionToken, socketId: socket.id }, now());
-      store.saveSession(sessionToken, { roomCode: room.roomCode, playerId });
-      timers.clear(room.roomCode, "idle");
-      socket.to(roomChannel(room.roomCode)).emit("player_joined", { player: room.toPublicPlayer(record) });
-      bindSocket(socket, room, playerId);
+    register("join_room", (payload) => {
+      const { room, displayName, avatar } = parseJoin(payload);
+      if (config.joinApproval) throw new GameError("APPROVAL_REQUIRED");
+      return addToRoom(socket, room, displayName, avatar);
+    });
+
+    register("request_join", (payload) => {
+      const { room, displayName, avatar } = parseJoin(payload);
+      dropPendingJoin(socket); // knocking on a new door cancels the previous knock
+      if (!config.joinApproval) return { status: "joined" as const, joined: addToRoom(socket, room, displayName, avatar) };
+      const requestId = "r_" + randomBytes(9).toString("base64url");
+      room.addJoinRequest({ requestId, displayName, avatar, socketId: socket.id, requestedAt: now() }, config.maxJoinRequests, now());
+      socket.data.pendingJoin = { roomCode: room.roomCode, requestId };
       broadcastRoom(room);
-      return { session: { sessionToken, playerId, roomCode: room.roomCode }, room: room.toPublic(now()), inviteUrl: inviteUrl(room.roomCode) };
+      return { status: "pending" as const, requestId, roomCode: room.roomCode, roomName: room.roomName };
+    });
+
+    register("cancel_join_request", () => {
+      dropPendingJoin(socket);
+      return null;
+    });
+
+    register("respond_join_request", (payload) => {
+      const { requestId, approve } = parse(respondJoinSchema, payload);
+      const { room, player } = requireSession(socket);
+      const req = room.takeJoinRequest(player.playerId, requestId);
+      const requester = io.sockets.sockets.get(req.socketId);
+      if (!requester || requester.data.pendingJoin?.requestId !== requestId) {
+        broadcastRoom(room);
+        throw new GameError("REQUEST_NOT_FOUND");
+      }
+      delete requester.data.pendingJoin;
+      if (!approve) {
+        requester.emit("join_denied", { reason: "denied" });
+        broadcastRoom(room);
+        return null;
+      }
+      try {
+        requester.emit("join_approved", addToRoom(requester, room, req.displayName, req.avatar));
+      } catch (err) {
+        // Full or started meanwhile: tell the requester, then report to the host.
+        requester.emit("join_denied", { reason: err instanceof GameError && err.code === "ROOM_FULL" ? "room_full" : "game_started" });
+        broadcastRoom(room);
+        throw err;
+      }
+      if (room.players.size >= room.settings.maxPlayers) {
+        denyAllRequests(room, "room_full");
+        broadcastRoom(room);
+      }
+      return null;
     });
 
     register("leave_room", () => {
@@ -415,7 +529,9 @@ export function createGameServer(config: ServerConfig, options: GameServerOption
 
     register("start_game", () => {
       const { room, player } = requireSession(socket);
-      emitDeal(room, room.startGame(player.playerId, now()));
+      const dealt = room.startGame(player.playerId, now());
+      denyAllRequests(room, "game_started");
+      emitDeal(room, dealt);
       return null;
     });
 
@@ -547,6 +663,7 @@ export function createGameServer(config: ServerConfig, options: GameServerOption
     });
 
     socket.on("disconnect", () => {
+      dropPendingJoin(socket);
       const { roomCode, playerId } = socket.data;
       if (!roomCode || !playerId) return;
       const room = store.getRoom(roomCode);

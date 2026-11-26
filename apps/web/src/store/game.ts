@@ -10,11 +10,13 @@ import type {
   ReactionKind,
   RoomSettings,
   RoundResult,
+  ServerInfo,
   SessionInfo,
 } from "@sam-kong/protocol";
 import { ActionError, call, socket } from "../lib/socket";
 import { sound } from "../lib/sound";
-import { sessionStore } from "../lib/session";
+import { tap } from "../lib/haptics";
+import { ownerKeyStore, sessionStore } from "../lib/session";
 import { emptyDraft, sanitizeDraft } from "../lib/arrange";
 import { t } from "../i18n";
 
@@ -47,8 +49,19 @@ interface GameState {
   clockOffset: number;
   reactions: LiveReaction[];
   soundOn: boolean;
+  /** What the server requires (owner key for creating rooms, host approval for joining). */
+  serverInfo: ServerInfo | null;
+  /** This device's saved owner key, if the site owner entered it here. */
+  ownerKey: string | null;
+  /** Waiting at a room's door for the host to allow us in. */
+  pendingJoin: { roomCode: string; roomName: string } | null;
 
   toast(text: string, tone?: Toast["tone"]): void;
+  /** Check an owner key with the server and remember it on this device. */
+  saveOwnerKey(key: string): Promise<void>;
+  forgetOwnerKey(): void;
+  cancelJoin(): Promise<void>;
+  respondJoin(requestId: string, approve: boolean): Promise<void>;
   toggleSound(): void;
   sendReaction(kind: ReactionKind, value: string): Promise<void>;
   /** Save the draft right now (used just before the arrangement deadline). */
@@ -107,6 +120,26 @@ export const useGame = create<GameState>((set, get) => {
     clockOffset: 0,
     reactions: [],
     soundOn: sound.isOn(),
+    serverInfo: null,
+    ownerKey: ownerKeyStore.get(),
+    pendingJoin: null,
+
+    saveOwnerKey: (key) =>
+      act(async () => {
+        const k = key.trim();
+        await call("verify_owner_key", { ownerKey: k });
+        ownerKeyStore.save(k);
+        set({ ownerKey: k });
+      }),
+    forgetOwnerKey() {
+      ownerKeyStore.save(null);
+      set({ ownerKey: null });
+    },
+    cancelJoin: async () => {
+      set({ pendingJoin: null });
+      await call("cancel_join_request", {}).catch(() => {});
+    },
+    respondJoin: (requestId, approve) => act(async () => void (await call("respond_join_request", { requestId, approve }))),
 
     toggleSound() {
       const on = !get().soundOn;
@@ -129,8 +162,23 @@ export const useGame = create<GameState>((set, get) => {
       set((s) => ({ toasts: s.toasts.filter((x) => x.id !== id) }));
     },
 
-    createRoom: (p) => act(async () => enterRoom(await call("create_room", p))),
-    joinRoom: (p) => act(async () => enterRoom(await call("join_room", p))),
+    createRoom: (p) =>
+      act(async () => {
+        try {
+          enterRoom(await call("create_room", { ...p, ownerKey: get().ownerKey ?? undefined }));
+        } catch (e) {
+          // A saved key that no longer matches (the owner changed it): forget it on this device.
+          if (e instanceof ActionError && e.payload.code === "OWNER_KEY_INVALID") get().forgetOwnerKey();
+          throw e;
+        }
+      }),
+    /** Knock on a room's door; enter at once if the server doesn't require approval. */
+    joinRoom: (p) =>
+      act(async () => {
+        const r = await call("request_join", p);
+        if (r.status === "joined") enterRoom(r.joined);
+        else set({ pendingJoin: { roomCode: r.roomCode, roomName: r.roomName } });
+      }),
 
     async restore(token) {
       set({ restoring: true });
@@ -201,15 +249,50 @@ export const useGame = create<GameState>((set, get) => {
 
 socket.on("connect", () => {
   useGame.setState({ connected: true });
+  call("server_info", {})
+    .then((serverInfo) => useGame.setState({ serverInfo }))
+    .catch(() => {});
   // After a network drop the server sees a new socket: re-bind it to our session.
   const s = useGame.getState().session ?? sessionStore.getTab();
   if (s && useGame.getState().room) void useGame.getState().restore(s.sessionToken);
 });
-socket.on("disconnect", () => useGame.setState({ connected: false }));
+socket.on("disconnect", () => {
+  // The server drops a waiting request when the connection goes; ask the visitor to knock again.
+  if (useGame.getState().pendingJoin) {
+    useGame.setState({ pendingJoin: null });
+    useGame.getState().toast(t.access.requestLost, "error");
+  }
+  useGame.setState({ connected: false });
+});
+
+socket.on("join_approved", (joined) => {
+  sessionStore.save(joined.session);
+  useGame.setState({ session: joined.session, room: joined.room, pendingJoin: null });
+  useGame.getState().toast(t.access.approved, "success");
+  sound.play("confirm");
+});
+
+socket.on("join_denied", ({ reason }) => {
+  useGame.setState({ pendingJoin: null });
+  useGame.getState().toast(t.access.denied[reason], "error");
+});
+
+/** Request ids the host has already been alerted about, so each knock rings once. */
+const announcedRequests = new Set<string>();
 
 socket.on("room_updated", (room) => {
   const { session } = useGame.getState();
   if (!session || room.roomCode !== session.roomCode) return;
+  // Host: ring and buzz when someone new knocks.
+  if (room.hostPlayerId === session.playerId) {
+    for (const r of room.joinRequests) {
+      if (announcedRequests.has(r.requestId)) continue;
+      announcedRequests.add(r.requestId);
+      useGame.getState().toast(t.access.knocked(r.displayName));
+      sound.play("reaction");
+      tap(40);
+    }
+  }
   const patch: Partial<GameState> = { room, clockOffset: room.serverNow - Date.now() };
   if (room.gameState === "LOBBY") Object.assign(patch, { hand: null, result: null, finished: null, draft: emptyDraft() });
   useGame.setState(patch);

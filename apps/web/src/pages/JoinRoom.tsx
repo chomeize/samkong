@@ -1,7 +1,7 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { NICKNAME_MAX_LENGTH, ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH, type AvatarId } from "@sam-kong/protocol";
-import { AvatarPicker, Screen } from "../components/ui";
+import { Avatar, AvatarPicker, Screen } from "../components/ui";
 import { profileStore } from "../lib/session";
 import { useGame } from "../store/game";
 import { t } from "../i18n";
@@ -25,7 +25,15 @@ export default function JoinRoom() {
   const [displayName, setName] = useState(saved?.displayName ?? "");
   const [avatar, setAvatar] = useState<AvatarId>(saved?.avatar ?? "cat");
   const [busy, setBusy] = useState(false);
+  const pendingJoin = useGame((s) => s.pendingJoin);
+  const session = useGame((s) => s.session);
+  const cancelJoin = useGame((s) => s.cancelJoin);
   const canSubmit = roomCode.length === ROOM_CODE_LENGTH && displayName.trim().length > 0 && !busy;
+
+  // Enter the room as soon as we have a seat: straight away, or once the host allows us in.
+  useEffect(() => {
+    if (session) navigate(`/room/${session.roomCode}`, { replace: true });
+  }, [session, navigate]);
 
   const submit = async (e?: FormEvent) => {
     e?.preventDefault();
@@ -34,13 +42,39 @@ export default function JoinRoom() {
     try {
       profileStore.save({ displayName: displayName.trim(), avatar });
       await joinRoom({ roomCode, displayName, avatar });
-      navigate(`/room/${roomCode}`);
     } catch {
       /* toast already shown */
     } finally {
       setBusy(false);
     }
   };
+
+  if (pendingJoin) {
+    return (
+      <Screen
+        top={<PageHeader title={t.home.join} />}
+        actions={
+          <button type="button" className="btn-secondary w-full" onClick={() => void cancelJoin()}>
+            {t.access.cancel}
+          </button>
+        }
+      >
+        <div className="flex flex-1 flex-col items-center justify-center gap-5 text-center" role="status" aria-live="polite">
+          <div className="relative">
+            <Avatar id={avatar} size={88} ring="gold" />
+            <span className="absolute -bottom-1 -right-1 flex h-8 w-8 items-center justify-center rounded-full bg-night-3 text-lg ring-2 ring-night">
+              <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-gold border-t-transparent" aria-hidden />
+            </span>
+          </div>
+          <div>
+            <h2 className="font-display text-2xl font-bold text-gold">{t.access.waitingTitle}</h2>
+            <p className="mx-auto mt-2 max-w-xs text-ink-dim">{t.access.waitingBody(pendingJoin.roomName)}</p>
+          </div>
+          <p className="font-mono text-sm tracking-widest text-ink-faint">{pendingJoin.roomCode}</p>
+        </div>
+      </Screen>
+    );
+  }
 
   return (
     <Screen

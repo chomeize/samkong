@@ -2,7 +2,10 @@ import type { AvatarId } from "./avatars.js";
 import type {
   ArrangementDTO,
   GameFinishedPayload,
+  JoinDeniedPayload,
   JoinedPayload,
+  RequestJoinResult,
+  ServerInfo,
   LeaderboardEntry,
   PrivateHand,
   PublicPlayer,
@@ -28,6 +31,17 @@ export interface CreateRoomPayload {
   avatar: AvatarId;
   roomName?: string;
   settings?: Partial<RoomSettings>;
+  /** Required when the server has an owner key set. */
+  ownerKey?: string;
+}
+
+export interface OwnerKeyPayload {
+  ownerKey: string;
+}
+
+export interface RespondJoinPayload {
+  requestId: string;
+  approve: boolean;
 }
 
 export interface JoinRoomPayload {
@@ -67,8 +81,15 @@ export interface SendReactionPayload {
 export type EmptyPayload = Record<string, never>;
 
 export interface ClientToServerEvents {
+  server_info: (p: EmptyPayload, ack: AckFn<ServerInfo>) => void;
+  verify_owner_key: (p: OwnerKeyPayload, ack: AckFn) => void;
   create_room: (p: CreateRoomPayload, ack: AckFn<JoinedPayload>) => void;
+  /** Direct join; only allowed when the server doesn't require host approval. */
   join_room: (p: JoinRoomPayload, ack: AckFn<JoinedPayload>) => void;
+  /** Knock to join: joins at once without approval, otherwise waits for the host. */
+  request_join: (p: JoinRoomPayload, ack: AckFn<RequestJoinResult>) => void;
+  cancel_join_request: (p: EmptyPayload, ack: AckFn) => void;
+  respond_join_request: (p: RespondJoinPayload, ack: AckFn) => void;
   leave_room: (p: EmptyPayload, ack: AckFn) => void;
   player_ready: (p: ReadyPayload, ack: AckFn) => void;
   update_room_settings: (p: UpdateRoomSettingsPayload, ack: AckFn<PublicRoom>) => void;
@@ -117,6 +138,8 @@ export interface CardsRevealedPayload {
 
 export interface ServerToClientEvents {
   room_created: (p: JoinedPayload) => void;
+  join_approved: (p: JoinedPayload) => void;
+  join_denied: (p: JoinDeniedPayload) => void;
   room_updated: (p: PublicRoom) => void;
   player_joined: (p: { player: PublicPlayer }) => void;
   player_left: (p: PlayerLeftPayload) => void;

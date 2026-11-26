@@ -52,6 +52,15 @@ export interface PlayerRecord {
   foulCount: number;
 }
 
+/** Someone knocking to join; becomes a player only when the host allows it. */
+export interface JoinRequest {
+  requestId: string;
+  displayName: string;
+  avatar: AvatarId;
+  socketId: string;
+  requestedAt: number;
+}
+
 export interface NewPlayer {
   playerId: string;
   displayName: string;
@@ -91,6 +100,7 @@ const emptyArrangement = (): Arrangement => ({ front: [], middle: [], back: [] }
  */
 export class Room {
   readonly players = new Map<string, PlayerRecord>();
+  readonly joinRequests = new Map<string, JoinRequest>();
   gameState: GameState = "LOBBY";
   currentRound = 0;
   deadlineAt: number | null = null;
@@ -164,6 +174,29 @@ export class Room {
     this.players.set(np.playerId, record);
     this.touch(now);
     return record;
+  }
+
+  // ---------- join requests (host approval) ----------
+
+  /** Same checks as joining, plus no duplicate name among people already waiting. */
+  addJoinRequest(req: JoinRequest, maxRequests: number, now: number) {
+    if (this.gameState !== "LOBBY") throw new GameError("GAME_ALREADY_STARTED");
+    if (this.players.size >= this.settings.maxPlayers) throw new GameError("ROOM_FULL");
+    const key = nicknameKey(req.displayName);
+    for (const p of this.players.values()) if (nicknameKey(p.displayName) === key) throw new GameError("NICKNAME_TAKEN");
+    for (const r of this.joinRequests.values()) if (nicknameKey(r.displayName) === key) throw new GameError("NICKNAME_TAKEN");
+    if (this.joinRequests.size >= maxRequests) throw new GameError("TOO_MANY_REQUESTS");
+    this.joinRequests.set(req.requestId, req);
+    this.touch(now);
+  }
+
+  /** Host-only: take a request out so it can be approved or denied. */
+  takeJoinRequest(byPlayerId: string, requestId: string): JoinRequest {
+    this.requireHost(byPlayerId);
+    const req = this.joinRequests.get(requestId);
+    if (!req) throw new GameError("REQUEST_NOT_FOUND");
+    this.joinRequests.delete(requestId);
+    return req;
   }
 
   /** Removes a player during LOBBY. Returns the new host id if the host changed. */
@@ -594,6 +627,12 @@ export class Room {
       currentRound: this.currentRound,
       players: this.orderedPlayers().map((p) => this.toPublicPlayer(p)),
       canStart: this.canStart(),
+      joinRequests: [...this.joinRequests.values()].map((r) => ({
+        requestId: r.requestId,
+        displayName: r.displayName,
+        avatar: r.avatar,
+        requestedAt: r.requestedAt,
+      })),
       deadlineAt: this.deadlineAt,
       serverNow: now,
       createdAt: this.createdAt,

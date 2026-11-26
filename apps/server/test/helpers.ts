@@ -23,6 +23,9 @@ export async function startTestServer(
     hostGraceMs: 200,
     roomIdleTtlMs: 300,
     publicWebUrl: "https://play.example",
+    // Most tests join directly; access.test.ts turns on the owner key and host approval.
+    ownerKey: null,
+    joinApproval: false,
     // 1 "second" of arrangement time = 5ms, so a 60s limit runs out in 300ms.
     secondMs: 5,
     deadlineGraceMs: 30,

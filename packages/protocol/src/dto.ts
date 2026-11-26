@@ -34,6 +34,8 @@ export interface PublicRoom {
   players: PublicPlayer[];
   /** True when the host may press Start Game right now. */
   canStart: boolean;
+  /** People knocking to join, waiting for the host to allow or deny (LOBBY only). */
+  joinRequests: JoinRequestView[];
   /** Arrangement deadline (epoch ms) while a timer runs, else null. */
   deadlineAt: number | null;
   /** Server clock at send time, so clients can correct for clock skew. */
@@ -46,6 +48,29 @@ export interface SessionInfo {
   sessionToken: string;
   playerId: string;
   roomCode: string;
+}
+
+export interface JoinRequestView {
+  requestId: string;
+  displayName: string;
+  avatar: AvatarId;
+  requestedAt: number;
+}
+
+/** What the server tells a visitor about this site before they act. */
+export interface ServerInfo {
+  /** Only the site owner (with the owner key) may create rooms. */
+  ownerKeyRequired: boolean;
+  /** Joining a room needs the host's approval. */
+  joinApproval: boolean;
+}
+
+export type RequestJoinResult =
+  | { status: "joined"; joined: JoinedPayload }
+  | { status: "pending"; requestId: string; roomCode: string; roomName: string };
+
+export interface JoinDeniedPayload {
+  reason: "denied" | "room_full" | "game_started" | "room_closed";
 }
 
 export interface JoinedPayload {

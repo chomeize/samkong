@@ -8,6 +8,12 @@ export interface ServerConfig {
   trustProxy: boolean;
   /** Built website (apps/web/dist). Served from this server when the folder exists. */
   webDistDir: string;
+  /** When set, only someone who knows this key can create rooms (the site owner). */
+  ownerKey: string | null;
+  /** Joining a room needs the host to allow each person. */
+  joinApproval: boolean;
+  /** Most people that may be waiting to join one room at a time. */
+  maxJoinRequests: number;
   maxRooms: number;
   /** How long the host may be offline before host moves to the next online player. */
   hostGraceMs: number;
@@ -48,6 +54,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     // Behind Railway's proxy every request would otherwise share one IP and one rate limit.
     trustProxy: env.TRUST_PROXY ? env.TRUST_PROXY === "true" : onRailway,
     webDistDir: env.WEB_DIST_DIR ?? fileURLToPath(new URL("../../web/dist", import.meta.url)),
+    ownerKey: env.OWNER_KEY?.trim() || null,
+    joinApproval: env.JOIN_APPROVAL !== "false",
+    maxJoinRequests: 8,
     maxRooms: int(env.MAX_ROOMS, 500),
     hostGraceMs: int(env.HOST_GRACE_MS, 60_000),
     roomIdleTtlMs: int(env.ROOM_IDLE_TTL_MS, 30 * 60_000),

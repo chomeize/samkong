@@ -47,7 +47,7 @@ function PlayerRow({ p, me, canKick, onKick }: { p: PublicPlayer; me: boolean; c
 export default function Lobby() {
   const room = useGame((s) => s.room)!;
   const session = useGame((s) => s.session)!;
-  const { setReady, start, kick, updateSettings, toast } = useGame.getState();
+  const { setReady, start, kick, updateSettings, toast, respondJoin } = useGame.getState();
   const [editOpen, setEditOpen] = useState(false);
   const [draft, setDraft] = useState<RoomSettings>(room.settings);
   const [roomName, setRoomName] = useState(room.roomName);
@@ -91,6 +91,32 @@ export default function Lobby() {
   return (
     <>
       <main className="safe-x flex flex-1 flex-col gap-4 py-4">
+        {/* People knocking: the host decides; everyone else just sees how many are waiting. */}
+        {room.joinRequests.length > 0 &&
+          (isHost ? (
+            <section className="rounded-3xl border border-gold/60 bg-gold/10 p-3" aria-labelledby="requests-h">
+              <h2 id="requests-h" className="mb-2 font-display text-base font-semibold text-gold">
+                🔔 {t.access.requestsTitle(room.joinRequests.length)}
+              </h2>
+              <ul className="flex flex-col gap-2">
+                {room.joinRequests.map((r) => (
+                  <li key={r.requestId} className="flex items-center gap-2.5 rounded-2xl bg-night-2/80 px-3 py-2">
+                    <Avatar id={r.avatar} size={40} />
+                    <span className="min-w-0 flex-1 truncate font-semibold">{r.displayName}</span>
+                    <button type="button" className="btn-ghost min-h-[40px] px-3 text-sm" disabled={busy} onClick={() => run(() => respondJoin(r.requestId, false))}>
+                      {t.access.deny}
+                    </button>
+                    <button type="button" className="btn-primary min-h-[40px] px-4 text-sm" disabled={busy} onClick={() => run(() => respondJoin(r.requestId, true))}>
+                      ✓ {t.access.allow}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : (
+            <p className="rounded-2xl bg-white/5 px-4 py-2 text-center text-sm text-ink-dim">{t.access.waitingCount(room.joinRequests.length)}</p>
+          ))}
+
         {/* Invite card: the code is the thing friends need, so it's the biggest element. */}
         <section className="felt rounded-3xl border border-felt-line/40 p-5 text-center shadow-lift">
           <p className="text-sm text-ink-dim">{t.lobby.code}</p>
