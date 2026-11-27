@@ -14,6 +14,8 @@ export interface ServerConfig {
   joinApproval: boolean;
   /** Most people that may be waiting to join one room at a time. */
   maxJoinRequests: number;
+  /** How long a bot "thinks" before confirming its hand (random within this range, ms). */
+  botDelayMs: { min: number; max: number };
   maxRooms: number;
   /** How long the host may be offline before host moves to the next online player. */
   hostGraceMs: number;
@@ -57,6 +59,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     ownerKey: env.OWNER_KEY?.trim() || null,
     joinApproval: env.JOIN_APPROVAL !== "false",
     maxJoinRequests: 8,
+    botDelayMs: { min: 2500, max: 7000 },
     maxRooms: int(env.MAX_ROOMS, 500),
     hostGraceMs: int(env.HOST_GRACE_MS, 60_000),
     roomIdleTtlMs: int(env.ROOM_IDLE_TTL_MS, 30 * 60_000),

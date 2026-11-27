@@ -46,6 +46,8 @@ export interface PlayerRecord {
   offlineSince: number | null;
   playerState: PlayerState;
   hasLeft: boolean;
+  /** Computer player: no socket, always ready, confirms on its own. */
+  isBot: boolean;
   totalScore: number;
   currentRoundScore: number;
   scoopCount: number;
@@ -89,6 +91,14 @@ export interface RoundOutcome {
   result: RoundResult;
   finished: boolean;
 }
+
+/** Names and avatars for computer players, used in order. */
+const BOT_PROFILES: Array<{ name: string; avatar: AvatarId }> = [
+  { name: "บอทส้ม", avatar: "monkey" },
+  { name: "บอทน้ำ", avatar: "penguin" },
+  { name: "บอทฟ้า", avatar: "elephant" },
+  { name: "บอทใบไม้", avatar: "frog" },
+];
 
 const ARRANGING_STATES: GameState[] = ["ARRANGING", "WAITING_FOR_CONFIRMATION"];
 const emptyArrangement = (): Arrangement => ({ front: [], middle: [], back: [] });
@@ -136,9 +146,35 @@ export class Room {
     return this.hostPlayerId === playerId;
   }
 
+  /** True if a real (non-bot) player is connected. Bots don't keep a room alive. */
   anyoneOnline() {
-    for (const p of this.players.values()) if (p.connectionStatus === "ONLINE") return true;
+    for (const p of this.players.values()) if (!p.isBot && p.connectionStatus === "ONLINE") return true;
     return false;
+  }
+
+  /** True while at least one real player is still in the room. */
+  hasHumans() {
+    for (const p of this.players.values()) if (!p.isBot && !p.hasLeft) return true;
+    return false;
+  }
+
+  /**
+   * Host-only, LOBBY-only: seat a computer player. Bots are always ready and never
+   * become host; the host removes one with kick().
+   */
+  addBot(byPlayerId: string, playerId: string, now: number): PlayerRecord {
+    this.requireHost(byPlayerId);
+    if (this.gameState !== "LOBBY") throw new GameError("INVALID_STATE");
+    if (this.players.size >= this.settings.maxPlayers) throw new GameError("ROOM_FULL");
+    const taken = new Set([...this.players.values()].map((p) => nicknameKey(p.displayName)));
+    const usedAvatars = new Set([...this.players.values()].map((p) => p.avatar));
+    const pick = BOT_PROFILES.find((b) => !taken.has(nicknameKey(b.name))) ?? BOT_PROFILES[0]!;
+    const avatar = BOT_PROFILES.map((b) => b.avatar).find((a) => !usedAvatars.has(a)) ?? pick.avatar;
+    const record = this.addPlayer({ playerId, displayName: pick.name, avatar, sessionToken: `bot:${playerId}`, socketId: "" }, now);
+    record.isBot = true;
+    record.socketId = null;
+    record.playerState = "READY";
+    return record;
   }
 
   /** Host may start when ≥2 players and every non-host player is READY (pressing Start counts as the host's ready). */
@@ -166,6 +202,7 @@ export class Room {
       offlineSince: null,
       playerState: "NOT_READY",
       hasLeft: false,
+      isBot: false,
       totalScore: 0,
       currentRoundScore: 0,
       scoopCount: 0,
@@ -235,7 +272,7 @@ export class Room {
     const changed = JSON.stringify(settings) !== JSON.stringify(this.settings);
     this.settings = settings;
     this.roomName = roomName;
-    if (changed) for (const p of this.players.values()) if (p.playerState === "READY") p.playerState = "NOT_READY";
+    if (changed) for (const p of this.players.values()) if (p.playerState === "READY" && !p.isBot) p.playerState = "NOT_READY";
     this.touch(now);
     return changed;
   }
@@ -531,7 +568,7 @@ export class Room {
     this.gameState = "LOBBY";
     this.round = null;
     this.deadlineAt = null;
-    for (const p of this.players.values()) p.playerState = "NOT_READY";
+    for (const p of this.players.values()) p.playerState = p.isBot ? "READY" : "NOT_READY";
   }
 
   private resetScores() {
@@ -568,7 +605,7 @@ export class Room {
 
   /** Move host to the next player by join order, preferring someone online who hasn't left. */
   transferHost(): string {
-    const candidates = this.orderedPlayers().filter((p) => p.playerId !== this.hostPlayerId && !p.hasLeft);
+    const candidates = this.orderedPlayers().filter((p) => p.playerId !== this.hostPlayerId && !p.hasLeft && !p.isBot);
     const next = candidates.find((p) => p.connectionStatus === "ONLINE") ?? candidates[0];
     if (next) this.hostPlayerId = next.playerId;
     return this.hostPlayerId;
@@ -624,6 +661,7 @@ export class Room {
       isHost: p.playerId === this.hostPlayerId,
       joinOrder: p.joinOrder,
       hasLeft: p.hasLeft,
+      isBot: p.isBot,
       connectionStatus: p.connectionStatus,
       playerState: p.playerState,
       totalScore: p.totalScore,

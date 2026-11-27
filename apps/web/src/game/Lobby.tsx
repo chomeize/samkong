@@ -27,7 +27,8 @@ function PlayerRow({ p, me, canKick, onKick }: { p: PublicPlayer; me: boolean; c
         </span>
         <span className="flex flex-wrap gap-1.5 text-xs">
           {p.isHost && <span className="rounded-full bg-gold/20 px-2 py-0.5 font-semibold text-gold">👑 {t.lobby.host}</span>}
-          {offline && <span className="text-ink-faint">{t.lobby.offline}</span>}
+          {p.isBot && <span className="rounded-full bg-white/10 px-2 py-0.5 font-semibold text-ink-dim">🤖 {t.bots.badge}</span>}
+          {offline && !p.isBot && <span className="text-ink-faint">{t.lobby.offline}</span>}
         </span>
       </span>
       {!p.isHost && (
@@ -47,7 +48,7 @@ function PlayerRow({ p, me, canKick, onKick }: { p: PublicPlayer; me: boolean; c
 export default function Lobby() {
   const room = useGame((s) => s.room)!;
   const session = useGame((s) => s.session)!;
-  const { setReady, start, kick, updateSettings, toast, respondJoin } = useGame.getState();
+  const { setReady, start, kick, updateSettings, toast, respondJoin, addBot } = useGame.getState();
   const [editOpen, setEditOpen] = useState(false);
   const [draft, setDraft] = useState<RoomSettings>(room.settings);
   const [roomName, setRoomName] = useState(room.roomName);
@@ -139,8 +140,13 @@ export default function Lobby() {
         </section>
 
         <section aria-labelledby="players-h">
-          <h2 id="players-h" className="mb-2 flex items-baseline justify-between font-display text-lg font-semibold">
+          <h2 id="players-h" className="mb-2 flex items-center justify-between font-display text-lg font-semibold">
             {t.lobby.players(room.players.length, room.settings.maxPlayers)}
+            {isHost && emptySeats > 0 && (
+              <button type="button" className="chip font-sans text-sm" disabled={busy} onClick={() => run(addBot)}>
+                {t.bots.add}
+              </button>
+            )}
           </h2>
           <ul className="flex flex-col gap-2">
             {room.players.map((p) => (

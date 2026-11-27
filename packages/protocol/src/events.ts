@@ -94,6 +94,8 @@ export interface ClientToServerEvents {
   player_ready: (p: ReadyPayload, ack: AckFn) => void;
   update_room_settings: (p: UpdateRoomSettingsPayload, ack: AckFn<PublicRoom>) => void;
   kick_player: (p: KickPlayerPayload, ack: AckFn) => void;
+  /** Host-only, in the lobby: seat a computer player (remove it with kick_player). */
+  add_bot: (p: EmptyPayload, ack: AckFn<PublicRoom>) => void;
   start_game: (p: EmptyPayload, ack: AckFn) => void;
   update_arrangement: (p: ArrangementDTO, ack: AckFn) => void;
   request_auto_arrange: (p: EmptyPayload, ack: AckFn<ArrangementDTO>) => void;

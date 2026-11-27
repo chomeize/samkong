@@ -15,6 +15,8 @@ export interface PublicPlayer {
   joinOrder: number;
   /** Left during a game; removed from the room at the next round boundary. */
   hasLeft: boolean;
+  /** A computer player added by the host; arranges and confirms on its own. */
+  isBot: boolean;
   connectionStatus: ConnectionStatus;
   playerState: PlayerState;
   totalScore: number;

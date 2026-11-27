@@ -110,6 +110,11 @@ export default function Home() {
           <Link to="/join" className={`${canCreate ? "btn-secondary" : "btn-primary text-lg"} w-full`}>
             {t.home.join}
           </Link>
+          {canCreate && (
+            <Link to="/bots" className="btn-ghost min-h-[44px] w-full border border-white/10">
+              {t.bots.homeButton}
+            </Link>
+          )}
           {serverInfo?.ownerKeyRequired && (
             <button type="button" className="btn-ghost min-h-[36px] text-xs" onClick={() => setOwnerOpen(true)}>
               🔑 {t.access.ownerLink}

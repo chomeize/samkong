@@ -26,8 +26,10 @@ export async function startTestServer(
     // Most tests join directly; access.test.ts turns on the owner key and host approval.
     ownerKey: null,
     joinApproval: false,
-    // 1 "second" of arrangement time = 5ms, so a 60s limit runs out in 300ms.
-    secondMs: 5,
+    botDelayMs: { min: 10, max: 30 },
+    // Real seconds by default, so a room's 120s limit never runs out mid-test on a busy machine.
+    // The timer tests (phase4.test.ts) shrink it to 5ms per "second".
+    secondMs: 1000,
     deadlineGraceMs: 30,
     offlineAutoSubmitMs: 250,
     rateLimits: {

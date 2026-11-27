@@ -3,6 +3,9 @@ import { autoArrange, evaluateArrangement, parseCard } from "@sam-kong/engine";
 import type { ArrangementDTO, PrivateHand, RoomSettings } from "@sam-kong/protocol";
 import { errCode, next, ok, sleep, startTestServer, type Client, type TestServer } from "./helpers.js";
 
+/** 1 "second" of arrangement time = 5ms, so a 60s limit runs out in 300ms. */
+const FAST = { secondMs: 5 };
+
 let t: TestServer;
 afterEach(async () => {
   await t?.stop();
@@ -25,7 +28,7 @@ const isFoul = (d: ArrangementDTO) =>
   evaluateArrangement({ front: d.front.map(parseCard), middle: d.middle.map(parseCard), back: d.back.map(parseCard) }).isFoul;
 
 async function startGame(n: number, settings: Partial<RoomSettings>): Promise<{ seats: Seat[]; roomCode: string }> {
-  t = await startTestServer();
+  t = await startTestServer(FAST);
   const host = await t.client();
   const created = ok(await host.emitWithAck("create_room", { displayName: "P0", avatar: "tiger", settings }));
   const raw: Array<Omit<Seat, "hand">> = [{ c: host, playerId: created.session.playerId, token: created.session.sessionToken }];
@@ -43,7 +46,7 @@ async function startGame(n: number, settings: Partial<RoomSettings>): Promise<{ 
 
 describe("arrangement timer (FR-10, AC-06)", () => {
   it("sets a shared deadline and clears it at the reveal", async () => {
-    t = await startTestServer();
+    t = await startTestServer(FAST);
     const host = await t.client();
     const created = ok(await host.emitWithAck("create_room", { displayName: "H", avatar: "tiger", settings: { arrangementTimeLimit: 60 } }));
     const g = await t.client();
@@ -61,7 +64,7 @@ describe("arrangement timer (FR-10, AC-06)", () => {
   });
 
   it("auto-submits unconfirmed players at the deadline and reveals", async () => {
-    const { seats } = await startGame(3, { arrangementTimeLimit: 60 });
+    const { seats } = await startGame(3, { arrangementTimeLimit: 120 });
     const [a, b, c] = seats;
     ok(await a!.c.emitWithAck("confirm_hand", { arrangement: validFor(a!.hand), acceptFoul: false }));
     // b leaves a partial draft; c has a complete valid draft but never confirms.

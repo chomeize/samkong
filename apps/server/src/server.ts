@@ -20,10 +20,10 @@ import {
   type ServerToClientEvents,
   type SessionRestoredPayload,
 } from "@sam-kong/protocol";
-import type { RandomInt } from "@sam-kong/engine";
+import { autoArrange, type RandomInt } from "@sam-kong/engine";
 import type { ServerConfig } from "./config.js";
 import { RateLimiter } from "./rateLimit.js";
-import { Room, type PlayerRecord, type RoundOutcome } from "./room.js";
+import { Room, toDTO, type PlayerRecord, type RoundOutcome } from "./room.js";
 import { InMemoryRoomStore, type RoomStore } from "./store.js";
 import { RoomTimers } from "./timers.js";
 import {
@@ -261,7 +261,8 @@ export function createGameServer(config: ServerConfig, options: GameServerOption
     if (reason === "kicked") targetSocket?.emit("player_left", { playerId: player.playerId, reason });
     store.deleteSession(player.sessionToken);
     unbindSocket(targetSocket, room.roomCode);
-    if (room.players.size === 0) {
+    // A room with nobody left but bots has no one to play for.
+    if (!room.hasHumans()) {
       deleteRoom(room.roomCode);
       return;
     }
@@ -278,9 +279,34 @@ export function createGameServer(config: ServerConfig, options: GameServerOption
         const p = room.players.get(id);
         const hand = room.privateHandFor(id);
         if (p?.socketId && hand) io.to(p.socketId).emit("cards_dealt", hand);
+        if (p?.isBot) scheduleBotTurn(room, id);
       }
     }
     broadcastRoom(room);
+  };
+
+  /**
+   * A bot "thinks" for a few seconds, then confirms an auto-arranged hand (never a foul).
+   * It always finishes before the arrangement deadline.
+   */
+  const scheduleBotTurn = (room: Room, botId: string) => {
+    const { min, max } = config.botDelayMs;
+    let delay = min + Math.floor(Math.random() * Math.max(1, max - min));
+    if (room.deadlineAt) delay = Math.max(0, Math.min(delay, room.deadlineAt - now() - 1000));
+    const code = room.roomCode;
+    const roundNumber = room.round?.roundNumber;
+    timers.set(code, `bot:${botId}`, delay, () => {
+      const r = store.getRoom(code);
+      const hand = r?.round?.hands.get(botId);
+      if (!r || !hand || hand.confirmed || r.round?.roundNumber !== roundNumber) return;
+      try {
+        const outcome = r.confirmHand(botId, toDTO(autoArrange(hand.dealt)), true, now());
+        emitConfirmed(r, botId, false);
+        emitReveal(r, outcome);
+      } catch (err) {
+        if (!(err instanceof GameError)) console.error("[bot]", err);
+      }
+    });
   };
 
   /** Auto-submitted players: tell the room, and give each player their final (possibly auto-arranged) hand. */
@@ -519,6 +545,10 @@ export function createGameServer(config: ServerConfig, options: GameServerOption
       // Mid-game: the player stays in this round's results and is removed at the next round boundary.
       store.deleteSession(player.sessionToken);
       unbindSocket(socket, room.roomCode);
+      if (!room.hasHumans()) {
+        deleteRoom(room.roomCode); // only bots left: nobody to play for
+        return null;
+      }
       io.to(roomChannel(room.roomCode)).emit("player_left", { playerId: player.playerId, reason: "left" });
       if (wasArranging) emitConfirmed(room, player.playerId, true);
       broadcastStatus(room, player);
@@ -618,6 +648,15 @@ export function createGameServer(config: ServerConfig, options: GameServerOption
       if (!settings.ok) throw new GameError("INVALID_SETTINGS", { field: settings.field });
       const roomName = cleanRoomName(p.roomName, room.roomName);
       room.updateSettings(player.playerId, settings.value, roomName, now());
+      broadcastRoom(room);
+      return room.toPublic(now());
+    });
+
+    register("add_bot", () => {
+      const { room, player } = requireSession(socket);
+      const bot = room.addBot(player.playerId, generatePlayerId(), now());
+      io.to(roomChannel(room.roomCode)).emit("player_joined", { player: room.toPublicPlayer(bot) });
+      if (room.players.size >= room.settings.maxPlayers) denyAllRequests(room, "room_full");
       broadcastRoom(room);
       return room.toPublic(now());
     });

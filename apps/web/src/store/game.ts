@@ -68,6 +68,9 @@ interface GameState {
   flushDraft(): void;
   dismissToast(id: number): void;
   createRoom(p: { displayName: string; avatar: AvatarId; roomName?: string; settings: Partial<RoomSettings> }): Promise<void>;
+  /** Solo practice: create a room, seat `bots` computer players and start straight away. */
+  playWithBots(p: { displayName: string; avatar: AvatarId; bots: number; settings: Partial<RoomSettings> }): Promise<void>;
+  addBot(): Promise<void>;
   joinRoom(p: { roomCode: string; displayName: string; avatar: AvatarId }): Promise<void>;
   restore(token: string): Promise<boolean>;
   leave(): Promise<void>;
@@ -174,6 +177,19 @@ export const useGame = create<GameState>((set, get) => {
           throw e;
         }
       }),
+    playWithBots: ({ bots, settings, ...me }) =>
+      act(async () => {
+        const joined = await call("create_room", {
+          ...me,
+          roomName: t.bots.title,
+          settings: { ...settings, maxPlayers: Math.min(4, bots + 1) as RoomSettings["maxPlayers"] },
+          ownerKey: get().ownerKey ?? undefined,
+        });
+        enterRoom(joined);
+        for (let i = 0; i < bots; i++) set({ room: await call("add_bot", {}) });
+        await call("start_game", {});
+      }),
+    addBot: () => act(async () => set({ room: await call("add_bot", {}) })),
     /** Knock on a room's door; enter at once if the server doesn't require approval. */
     joinRoom: (p) =>
       act(async () => {
